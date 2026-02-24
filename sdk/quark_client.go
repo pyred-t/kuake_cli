@@ -15,23 +15,35 @@ import (
 
 // NewQuarkClient 创建夸克网盘客户端（支持多个 token）
 // configPath: 配置文件路径，如果为空则使用默认路径 DEFAULT_CONFIG_PATH
-func NewQuarkClient(configPath string) *QuarkClient {
-	// 加载配置文件
-	config, err := LoadConfig(configPath)
-	if err != nil {
-		panic("failed to load config file")
+// cookies: 可选的 cookies 字符串，如果提供则直接使用，否则从配置文件读取
+func NewQuarkClient(configPath string, cookies ...string) *QuarkClient {
+	var accessTokens []string
+	var initialToken string
+	var initialIdx int
+
+	// 如果提供了 cookies 参数，直接使用
+	if len(cookies) > 0 && cookies[0] != "" {
+		accessTokens = []string{cookies[0]}
+		initialToken = cookies[0]
+		initialIdx = 0
+	} else {
+		// 否则从配置文件加载
+		config, err := LoadConfig(configPath)
+		if err != nil {
+			panic("failed to load config file")
+		}
+
+		accessTokens = config.Quark.AccessTokens
+
+		if len(accessTokens) == 0 {
+			panic("at least one access token is required")
+		}
+
+		// 随机选择一个 token 作为初始 token
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		initialIdx = rng.Intn(len(accessTokens))
+		initialToken = accessTokens[initialIdx]
 	}
-
-	accessTokens := config.Quark.AccessTokens
-
-	if len(accessTokens) == 0 {
-		panic("at least one access token is required")
-	}
-
-	// 随机选择一个 token 作为初始 token
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	initialIdx := rng.Intn(len(accessTokens))
-	initialToken := accessTokens[initialIdx]
 
 	// 从环境变量读取调试开关
 	// 0 关闭，1 开启

@@ -142,6 +142,7 @@ kuake <command> [config.json] [arguments...]  (deprecated: use -c instead)
 
 **选项**：
 - `-c, --config <path>`: 指定配置文件路径（默认: config.json）
+- `-cookies, --cookies <value>`: 直接指定 cookie 值（自动添加 `__pus=` 前缀，绕过配置文件）
 
 ### 可用命令
 
@@ -287,6 +288,10 @@ export KUAKE_UPLOAD_PARALLEL=8
 
 # 查看帮助
 ./kuake-{version}-{os}-{arch} help
+
+# 使用 -cookies 参数（绕过配置文件，只需提供 cookie 值）
+./kuake-{version}-{os}-{arch} -cookies "your_cookie_value_here" user
+./kuake-{version}-{os}-{arch} -cookies "your_cookie_value_here" upload "file.txt" "/folder/file.txt"
 ```
 
 **注意**：
@@ -295,6 +300,14 @@ export KUAKE_UPLOAD_PARALLEL=8
 - 如果已添加到 PATH，可以直接使用 `kuake` 命令
 
 ## 变更日志
+
+### v1.3.8
+
+- 新增 `-cookies` 参数支持，可直接通过命令行指定 cookie 值，无需配置文件
+  - 自动为 cookie 值添加 `__pus=` 前缀（如果缺失）
+  - 自动添加末尾分号（如果缺失）
+  - 使用 `-cookies` 参数时，不会读取配置文件，提高效率并避免不一致
+- 修复并行上传逻辑，多分片文件禁用并行上传（因为需要使用 X-Oss-Hash-Ctx）
 
 ### v1.3.7
 
@@ -349,6 +362,11 @@ export KUAKE_UPLOAD_PARALLEL=8
   - 配置文件参数是可选的，放在命令之后、其他参数之前
   - 配置文件参数必须是 `.json` 扩展名
   - 示例：`kuake user custom.json`（使用自定义配置文件）
+- **Cookie 参数**：
+  - 使用 `-cookies` 或 `--cookies` 参数可直接指定 cookie 值，无需配置文件
+  - 只需提供 cookie 值，工具会自动添加 `__pus=` 前缀和末尾分号
+  - 使用 `-cookies` 参数时，不会读取配置文件，提高效率并避免不一致
+  - 示例：`kuake -cookies "your_cookie_value" user`
 - **操作说明**：
   - 所有操作都通过夸克网盘 API 进行
   - 需要有效的 Cookie（access_token）才能使用

@@ -18,7 +18,7 @@ const (
 )
 
 // Version 版本号
-var Version = "v1.3.7"
+var Version = "v1.3.8"
 
 type CLIResult struct {
 	Success bool                   `json:"success"`
@@ -33,8 +33,9 @@ func main() {
 		os.Exit(ExitError)
 	}
 
-	// 解析命令行参数，支持 -c/--config 参数
+	// 解析命令行参数，支持 -c/--config 和 -cookies 参数
 	configPath := sdk.DEFAULT_CONFIG_PATH
+	var cookies string
 	var command string
 	var args []string
 	skipNext := false
@@ -58,6 +59,22 @@ func main() {
 					Success: false,
 					Code:    "INVALID_ARGS",
 					Message: fmt.Sprintf("%s requires a config file path", arg),
+				})
+				os.Exit(ExitError)
+			}
+		}
+
+		// 检查是否是 cookies 参数
+		if arg == "-cookies" || arg == "--cookies" {
+			if i+1 < len(os.Args) {
+				cookies = os.Args[i+1]
+				skipNext = true
+				continue
+			} else {
+				outputJSON(&CLIResult{
+					Success: false,
+					Code:    "INVALID_ARGS",
+					Message: fmt.Sprintf("%s requires a cookies value", arg),
 				})
 				os.Exit(ExitError)
 			}
@@ -99,7 +116,20 @@ func main() {
 			os.Exit(ExitError)
 		}
 	}()
-	client = sdk.NewQuarkClient(configPath)
+	// 如果提供了 cookies 参数，自动添加 __pus= 前缀（如果还没有）
+	if cookies != "" {
+		// 如果传入的值不包含 __pus=，自动添加前缀
+		if !strings.Contains(cookies, "__pus=") {
+			cookies = "__pus=" + cookies
+		}
+		// 如果末尾没有分号，添加分号
+		if !strings.HasSuffix(cookies, ";") {
+			cookies = cookies + ";"
+		}
+		client = sdk.NewQuarkClient(configPath, cookies)
+	} else {
+		client = sdk.NewQuarkClient(configPath)
+	}
 
 	// 执行命令
 	var result *CLIResult
@@ -162,6 +192,7 @@ Usage:
 
 Options:
   -c, --config <path>    Specify config file path (default: config.json)
+  -cookies, --cookies <value>  Specify cookie value directly (automatically adds __pus= prefix, bypasses config file)
 
 Commands:
   user                        Get user information
@@ -208,6 +239,10 @@ Examples:
   kuake share-list 1 50 "created_at" "desc"
   kuake share-save "https://pan.quark.cn/s/xxx"
   kuake share-save "https://pan.quark.cn/s/xxx" "1234" "/folder"
+  
+  # Using -cookies parameter (bypasses config file, only cookie value needed):
+  kuake -cookies "your_cookie_value_here" user
+  kuake -cookies "your_cookie_value_here" upload "file.txt" "/folder/file.txt"
 
 Notes:
   - All path parameters must be quoted
@@ -215,6 +250,7 @@ Notes:
   - Upload parallel can be set by --max_upload_parallel or env KUAKE_UPLOAD_PARALLEL (1-16, default 4)
   - Results output as JSON to stdout
   - Exit code: 0=success, 1=failure
+  - When using -cookies, the config file is not read, improving efficiency and avoiding inconsistencies
 `)
 }
 

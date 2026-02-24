@@ -1162,7 +1162,9 @@ func (qc *QuarkClient) UploadFile(filePath, destPath string, progressCallback fu
 
 	totalParts := int((fileSize + partSize - 1) / partSize)
 	uploadParallel := resolveUploadParallel(totalParts)
-	canUseParallel := !useSavedState && startPartNumber == 1 && totalParts > 1 && uploadParallel > 1
+	// 多分片文件（totalParts > 1）：由于需要使用 X-Oss-Hash-Ctx，必须顺序上传，禁用并行上传
+	// 单分片文件（totalParts == 1）：可以并行上传（虽然只有一个分片，但保留并行逻辑）
+	canUseParallel := !useSavedState && startPartNumber == 1 && totalParts == 1 && uploadParallel > 1
 
 	buildUploadState := func(currentHashCtx *HashCtx) *UploadState {
 		return &UploadState{
