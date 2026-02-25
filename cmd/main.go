@@ -303,13 +303,16 @@ func handleUpload(client *sdk.QuarkClient, args []string) *CLIResult {
 		return &CLIResult{
 			Success: false,
 			Code:    "INVALID_ARGS",
-			Message: `Usage: upload <file> <dest> [--max_upload_parallel N] (all parameters must be quoted, e.g., upload 'file(1).txt' '/dest/file.txt' --max_upload_parallel 4)`,
+			Message: `Usage: upload <file> <dest> [--max_upload_parallel N] [--policy skip|overwrite|rsync] (all parameters must be quoted)`,
 		}
 	}
 
 	filePath := args[0]
 	destPath := args[1]
 	var uploadParallel string
+	opts := &sdk.UploadOptions{
+		Policy: sdk.UploadPolicySkip, // 默认跳过
+	}
 
 	for i := 2; i < len(args); i++ {
 		switch args[i] {
@@ -331,6 +334,24 @@ func handleUpload(client *sdk.QuarkClient, args []string) *CLIResult {
 				}
 			}
 			uploadParallel = strconv.Itoa(parallel)
+			i++
+		case "--policy":
+			if i+1 >= len(args) {
+				return &CLIResult{
+					Success: false,
+					Code:    "INVALID_ARGS",
+					Message: "missing value for --policy (skip/overwrite/rsync)",
+				}
+			}
+			policyArg := strings.ToLower(strings.TrimSpace(args[i+1]))
+			if policyArg != "skip" && policyArg != "overwrite" && policyArg != "rsync" {
+				return &CLIResult{
+					Success: false,
+					Code:    "INVALID_ARGS",
+					Message: "invalid --policy value, must be 'skip', 'overwrite', or 'rsync'",
+				}
+			}
+			opts.Policy = sdk.UploadPolicy(policyArg)
 			i++
 		default:
 			return &CLIResult{
@@ -363,7 +384,7 @@ func handleUpload(client *sdk.QuarkClient, args []string) *CLIResult {
 		}
 	}
 
-	response, err := client.UploadFile(filePath, destPath, progressCallback)
+	response, err := client.UploadFile(filePath, destPath, progressCallback, opts)
 	if err != nil {
 		return &CLIResult{
 			Success: false,

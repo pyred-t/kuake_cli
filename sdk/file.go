@@ -743,7 +743,13 @@ func (qc *QuarkClient) upFinish(pre *PreUploadResponse) (*FinishResponse, error)
 
 // UploadFile 上传文件到夸克网盘，支持大文件分片上传
 // progressCallback: 进度回调函数，如果为 nil 则不显示进度
-func (qc *QuarkClient) UploadFile(filePath, destPath string, progressCallback func(*UploadProgress)) (*StandardResponse, error) {
+// opts: 上传选项（可为 nil，使用默认行为）
+func (qc *QuarkClient) UploadFile(filePath, destPath string, progressCallback func(*UploadProgress), opts *UploadOptions) (*StandardResponse, error) {
+	// 解析选项，nil 安全
+	var policy UploadPolicy
+	if opts != nil {
+		policy = opts.Policy
+	}
 	filePath = stripQuotes(filePath)
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -897,6 +903,44 @@ func (qc *QuarkClient) UploadFile(filePath, destPath string, progressCallback fu
 	mimeType := mime.TypeByExtension(filepath.Ext(destFileName))
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
+	}
+
+	// 去重策略检查：在 upPre 之前检查目标路径是否已存在同名文件
+	if policy == UploadPolicySkip || policy == UploadPolicyRsync {
+		existingInfo, existErr := qc.GetFileInfo(destPath)
+		if existErr == nil && existingInfo != nil && existingInfo.Success {
+			// 文件已存在
+			switch policy {
+			case UploadPolicySkip:
+				return &StandardResponse{
+					Success: true,
+					Code:    "SKIPPED",
+					Message: fmt.Sprintf("文件已存在，跳过上传: %s", destPath),
+					Data:    existingInfo.Data,
+				}, nil
+			case UploadPolicyRsync:
+				// 检查文件大小是否一致
+				if existingInfo.Data != nil {
+					var existingSize int64
+					switch v := existingInfo.Data["size"].(type) {
+					case float64:
+						existingSize = int64(v)
+					case int64:
+						existingSize = v
+					}
+					if existingSize == fileSize {
+						return &StandardResponse{
+							Success: true,
+							Code:    "SKIPPED",
+							Message: fmt.Sprintf("文件大小相同，跳过上传: %s (%d bytes)", destPath, existingSize),
+							Data:    existingInfo.Data,
+						}, nil
+					}
+					// 大小不同，继续上传（覆盖）
+				}
+			}
+		}
+		// policy == UploadPolicyOverwrite 或文件不存在：继续上传
 	}
 
 	// 先检查是否有保存的上传状态（断点续传）
