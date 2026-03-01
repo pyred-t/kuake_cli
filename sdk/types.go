@@ -95,6 +95,23 @@ type StandardResponse struct {
 	Data    map[string]interface{} `json:"data"`    // 响应数据
 }
 
+// UploadPolicy 上传去重策略
+type UploadPolicy string
+
+const (
+	// UploadPolicySkip 同名文件自动跳过（默认行为）
+	UploadPolicySkip UploadPolicy = "skip"
+	// UploadPolicyOverwrite 同名文件覆盖上传
+	UploadPolicyOverwrite UploadPolicy = "overwrite"
+	// UploadPolicyRsync 仅覆盖大小不同的同名文件
+	UploadPolicyRsync UploadPolicy = "rsync"
+)
+
+// UploadOptions 上传选项
+type UploadOptions struct {
+	Policy UploadPolicy // 去重策略（skip/overwrite/rsync），空字符串表示不检查
+}
+
 // UploadProgress 上传进度信息
 type UploadProgress struct {
 	Progress     int           `json:"progress"`      // 进度百分比 (0-100)
