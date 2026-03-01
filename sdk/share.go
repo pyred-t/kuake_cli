@@ -2,8 +2,10 @@ package sdk
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"math/rand"
 	"net/url"
 	"regexp"
@@ -272,13 +274,11 @@ func (qc *QuarkClient) CreateShare(filePath string, expireDays int, needPasscode
 	// 注意：只有当url_type=2时才需要传递passcode参数
 	var generatedPasscode string
 	if needPasscode {
-		rand.Seed(time.Now().UnixNano())
-		chars := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-		var code strings.Builder
-		for i := 0; i < 4; i++ {
-			code.WriteByte(chars[rand.Intn(len(chars))])
+		passcode, err := generateSecurePasscode(4)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate secure passcode: %w", err)
 		}
-		generatedPasscode = code.String()
+		generatedPasscode = passcode
 		data["passcode"] = generatedPasscode
 	}
 
@@ -665,4 +665,27 @@ func (qc *QuarkClient) DeleteShare(shareIDs []string) error {
 	}
 
 	return nil
+}
+
+// generateSecurePasscode 生成加密安全的随机提取码
+// length: 提取码长度
+// 返回: 随机提取码字符串和错误
+// 使用 crypto/rand 确保提取码不可预测，防止安全漏洞
+func generateSecurePasscode(length int) (string, error) {
+	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	charsLen := big.NewInt(int64(len(chars)))
+	
+	var code strings.Builder
+	code.Grow(length)
+	
+	for i := 0; i < length; i++ {
+		// 使用 crypto/rand 生成加密安全的随机数
+		n, err := cryptorand.Int(cryptorand.Reader, charsLen)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate random number: %w", err)
+		}
+		code.WriteByte(chars[n.Int64()])
+	}
+	
+	return code.String(), nil
 }

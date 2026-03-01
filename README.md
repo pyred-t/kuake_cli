@@ -41,6 +41,8 @@
 - **文件删除**: 删除夸克网盘中的文件或目录
 - **分享功能**: 创建分享链接，支持设置有效期和提取码；取消分享，支持通过 share_id 或文件路径取消分享；转存分享文件到自己的网盘
 - **CLI 工具**: 提供命令行工具，方便其他进程调用
+- **管道模式**: 支持命令链式组合，可与 Unix 工具（如 `jq`、`grep` 等）组合使用，实现复杂的数据处理工作流
+- **OpenClaw 集成**: 支持作为 OpenClaw 技能使用，支持环境变量配置（`KUAKE_COOKIE`、`KUAKE_PATH`），不依赖 PATH 检测
 
 ## 系统要求
 
@@ -68,15 +70,15 @@ chmod +x build.sh
 
 **Linux/macOS**:
 ```bash
-wget https://github.com/zhangjingwei/kuake_sdk/releases/latest/download/kuake-v1.3.7-linux-amd64
-chmod +x kuake-v1.3.7-linux-amd64
-./kuake-v1.3.7-linux-amd64 user
+wget https://github.com/zhangjingwei/kuake_sdk/releases/latest/download/kuake-v1.3.8-linux-amd64
+chmod +x kuake-v1.3.8-linux-amd64
+./kuake-v1.3.8-linux-amd64 user
 ```
 
 **Windows**:
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/zhangjingwei/kuake_sdk/releases/latest/download/kuake-v1.3.7-windows-amd64.exe" -OutFile "kuake-v1.3.7-windows-amd64.exe"
-.\kuake-v1.3.7-windows-amd64.exe user
+Invoke-WebRequest -Uri "https://github.com/zhangjingwei/kuake_sdk/releases/latest/download/kuake-v1.3.8-windows-amd64.exe" -OutFile "kuake-v1.3.8-windows-amd64.exe"
+.\kuake-v1.3.8-windows-amd64.exe user
 ```
 
 ## 快速开始
@@ -100,9 +102,9 @@ Invoke-WebRequest -Uri "https://github.com/zhangjingwei/kuake_sdk/releases/lates
 ### 2. 使用 CLI 工具
 
 ```bash
-./kuake-v1.3.7-linux-amd64 user
-./kuake-v1.3.7-linux-amd64 upload "file.txt" "/file.txt"
-./kuake-v1.3.7-linux-amd64 list "/"
+./kuake-v1.3.8-linux-amd64 user
+./kuake-v1.3.8-linux-amd64 upload "file.txt" "/file.txt"
+./kuake-v1.3.8-linux-amd64 list "/"
 ```
 
 ## 配置说明
@@ -149,15 +151,15 @@ kuake <command> [config.json] [arguments...]  (deprecated: use -c instead)
 | 命令 | 说明 | 示例 |
 |------|------|------|
 | `user` | 获取用户信息 | `kuake user` |
-| `list [path]` | 列出目录内容（默认: "/"） | `kuake list "/"` |
-| `info <path>` | 获取文件/文件夹信息 | `kuake info "/file.txt"` |
-| `download <path>` | 获取文件下载链接 | `kuake download "/file.txt"` |
+| `list [path] [--stream]` | 列出目录内容（默认: "/"），使用 `--stream` 输出流式 JSON 用于管道模式 | `kuake list "/"` 或 `kuake list "/" --stream` |
+| `info <path>` | 获取文件/文件夹信息（支持管道模式） | `kuake info "/file.txt"` |
+| `download <path> [dest]` | 获取文件下载链接或下载到本地（支持管道模式） | `kuake download "/file.txt"` 或 `kuake download "/file.txt" ./local` |
 | `upload <file> <dest> [--max_upload_parallel N]` | 上传文件（上传进度输出到 stderr，支持并行上传） | `kuake upload "file.txt" "/file.txt"` 或 `kuake upload "file.txt" "/file.txt" --max_upload_parallel 4` |
 | `create <name> <pdir>` | 创建文件夹（pdir 为父目录路径，根目录使用 "/"） | `kuake create "test_folder" "/"` |
 | `move <src> <dest>` | 移动文件/文件夹 | `kuake move "/file.txt" "/folder/"` |
 | `copy <src> <dest>` | 复制文件/文件夹 | `kuake copy "/file.txt" "/folder/"` |
 | `rename <path> <newName>` | 重命名文件/文件夹 | `kuake rename "/file.txt" "new_name.txt"` |
-| `delete <path>` | 删除文件/文件夹 | `kuake delete "/file.txt"` |
+| `delete <path>` | 删除文件/文件夹（支持管道模式） | `kuake delete "/file.txt"` |
 | `share <path> <days> <passcode>` | 创建分享链接 | `kuake share "/file.txt" 7 "false"` |
 | `share-delete <share_id_or_path> [share_id_or_path2] ...` | 取消分享（支持通过 share_id 或文件路径） | `kuake share-delete "fdd8bfd93f21491ab80122538bec310d"` 或 `kuake share-delete "/file.txt"` |
 | `share-list [page] [size] [orderField] [orderType]` | 获取我的分享列表 | `kuake share-list` 或 `kuake share-list 1 50 "created_at" "desc"` |
@@ -179,6 +181,12 @@ kuake <command> [config.json] [arguments...]  (deprecated: use -c instead)
   - 也支持通过环境变量 `KUAKE_UPLOAD_PARALLEL` 设置
   - 并行上传仅在满足条件时启用（新上传、多分片文件等）
   - 断点续传时自动使用顺序上传，确保兼容性
+- **管道模式**：
+  - `list` 命令使用 `--stream` 选项输出流式 JSON（每行一个文件对象）
+  - `delete`、`info`、`download` 命令支持从 stdin 读取 JSON 输入
+  - 自动检测 stdin，有数据时自动进入管道模式
+  - 每行输入应为 JSON 对象，包含 `path` 或 `fid` 字段
+  - 支持与其他 Unix 工具组合使用，如 `jq`、`grep`、`head` 等
 
 ### 输出格式
 
@@ -292,6 +300,22 @@ export KUAKE_UPLOAD_PARALLEL=8
 # 使用 -cookies 参数（绕过配置文件，只需提供 cookie 值）
 ./kuake-{version}-{os}-{arch} -cookies "your_cookie_value_here" user
 ./kuake-{version}-{os}-{arch} -cookies "your_cookie_value_here" upload "file.txt" "/folder/file.txt"
+
+# 管道模式示例
+# 列出文件并批量删除
+./kuake-{version}-{os}-{arch} list "/photos" --stream | ./kuake-{version}-{os}-{arch} delete
+
+# 列出文件并获取每个文件的信息
+./kuake-{version}-{os}-{arch} list "/" --stream | ./kuake-{version}-{os}-{arch} info
+
+# 列出文件并获取下载链接
+./kuake-{version}-{os}-{arch} list "/documents" --stream | ./kuake-{version}-{os}-{arch} download
+
+# 结合 jq 进行过滤：列出大文件并删除
+./kuake-{version}-{os}-{arch} list "/" --stream | jq -r 'select(.size > 1000000) | .path' | ./kuake-{version}-{os}-{arch} delete
+
+# 列出文件并下载到指定目录
+./kuake-{version}-{os}-{arch} list "/videos" --stream | ./kuake-{version}-{os}-{arch} download "./downloads"
 ```
 
 **注意**：
@@ -300,6 +324,49 @@ export KUAKE_UPLOAD_PARALLEL=8
 - 如果已添加到 PATH，可以直接使用 `kuake` 命令
 
 ## 变更日志
+
+### v1.5.0
+
+- **OpenClaw 技能集成优化**
+  - 添加环境变量 `KUAKE_COOKIE` 支持，符合 OpenClaw 标准配置方式
+  - 认证优先级：`-cookies` 参数 > 环境变量 `KUAKE_COOKIE` > 配置文件
+  - 支持通过 `KUAKE_PATH` 环境变量指定完整路径，不依赖 PATH 检测
+  - 优化 OpenClaw 技能文档，添加 fallback 逻辑说明
+  - 简化部署文档，提供更清晰的配置选项
+
+### v1.4.0
+
+（版本信息待补充）
+
+### v1.3.9
+
+- 新增 `--policy` 上传去重策略（PR #16）
+  - 新增 `UploadPolicy`/`UploadOptions` 类型定义
+  - 支持三种策略：`skip`（跳过已存在文件）、`rename`（重命名）、`overwrite`（覆盖）
+  - `UploadFile` 函数签名扩展为 4 参数，支持策略配置
+- 并行上传优化（PR #18，8 项核心改动）
+  - 嵌入式哈希：MD5+SHA1 嵌入分片读取，提高上传效率
+  - `parallel_upload` 握手协议：优化并行上传协商流程
+  - `X-Oss-Hash-Ctx` MarshalBinary 修复：修复序列化问题
+  - Nl/Nh 32 位拆分：支持 >536MB 大文件上传
+  - 多线程并发上传：提升上传速度至 7-14 MB/s
+  - 分片级指数退避重试：每个分片最多重试 3 次，提高成功率
+  - 断点续传 PartThread 恢复：支持中断后恢复并行上传状态
+  - `x-oss-user-agent` 版本统一：统一版本标识
+- `user` 命令容量查询 + `--version`（PR #17）
+  - `getMemberInfo()` 合并容量/会员信息：统一用户信息获取接口
+  - 版本号常量定义：规范化版本管理
+  - `--version` 参数拦截：新增版本号查询命令参数
+- 新增管道模式（Pipeline Pattern）支持，支持命令链式组
+  - `list` 命令新增 `--stream` 选项，输出流式 JSON（每行一个文件对象）
+  - `delete`、`info`、`download` 命令支持从 stdin 读取 JSON 输入
+  - 自动检测 stdin，有数据时自动进入管道模式
+  - 支持与其他 Unix 工具（如 `jq`、`grep`、`head` 等）组合使用
+  - 保持向后兼容，无 stdin 时使用命令行参数
+  - 实现流式处理，支持逐行处理大量文件，内存占用低
+  - 改进错误处理，优雅处理 broken pipe 错误
+  - 统一数据类型处理，只处理 `QuarkFileInfo` 类型，提高代码一致性和可维护性
+  - 优化代码结构，移除多类型处理的复杂逻辑，简化代码实现
 
 ### v1.3.8
 
@@ -530,6 +597,7 @@ export KUAKE_UPLOAD_PARALLEL=8
 感谢所有为项目做出贡献的开发者！
 
 - [@Cody292](https://github.com/Cody292) - 并行上传功能（PR #13）
+- 管道模式支持（PR #16, #17, #18）
 
 欢迎提交 Pull Request 或 Issue 来帮助改进项目！
 

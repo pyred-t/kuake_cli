@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -18,7 +19,7 @@ const (
 )
 
 // Version 版本号，与编译产物名称一致
-var Version = "v1.3.9"
+var Version = "v1.5.0"
 
 type CLIResult struct {
 	Success bool                   `json:"success"`
@@ -128,7 +129,7 @@ func main() {
 			os.Exit(ExitError)
 		}
 	}()
-	// 如果提供了 cookies 参数，自动添加 __pus= 前缀（如果还没有）
+	// 优先级：cookies 参数 > 环境变量 KUAKE_COOKIE > 配置文件
 	if cookies != "" {
 		// 如果传入的值不包含 __pus=，自动添加前缀
 		if !strings.Contains(cookies, "__pus=") {
@@ -139,6 +140,17 @@ func main() {
 			cookies = cookies + ";"
 		}
 		client = sdk.NewQuarkClient(configPath, cookies)
+	} else if envCookie := os.Getenv("KUAKE_COOKIE"); envCookie != "" {
+		// 从环境变量读取（OpenClaw 标准配置方式）
+		// 如果传入的值不包含 __pus=，自动添加前缀
+		if !strings.Contains(envCookie, "__pus=") {
+			envCookie = "__pus=" + envCookie
+		}
+		// 如果末尾没有分号，添加分号
+		if !strings.HasSuffix(envCookie, ";") {
+			envCookie = envCookie + ";"
+		}
+		client = sdk.NewQuarkClient(configPath, envCookie)
 	} else {
 		client = sdk.NewQuarkClient(configPath)
 	}
@@ -195,6 +207,11 @@ func main() {
 		}
 	}
 
+	// 处理流式模式（result 为 nil 表示已经输出完毕）
+	if result == nil {
+		os.Exit(ExitSuccess)
+	}
+
 	// 输出 JSON 结果
 	outputJSON(result)
 
@@ -219,16 +236,17 @@ Options:
 
 Commands:
   user                        Get user information
-  list [path]                 List directory (default: "/")
-  info <path>                 Get file/folder info
-  download <path> [dest]      Get file download URL, or download to local file if dest given
+  list [path] [--stream]     List directory (default: "/")
+                              Use --stream to output one JSON per line for pipeline mode
+  info <path>                 Get file/folder info (supports pipe mode)
+  download <path> [dest]      Get file download URL, or download to local file if dest given (supports pipe mode)
   upload <file> <dest> [--max_upload_parallel N]
                               Upload file (all parameters must be quoted)
   create <name> <pdir>        Create folder (use "/" for root)
   move <src> <dest>           Move file/folder
   copy <src> <dest>           Copy file/folder
   rename <path> <newName>     Rename file/folder
-  delete <path>               Delete file/folder
+  delete <path>               Delete file/folder (supports pipe mode)
   share <path> <days> <passcode>  Create share link
                                 days: 0=permanent, 1/7/30=days
                                 passcode: "true" or "false"
@@ -268,6 +286,23 @@ Examples:
   kuake -cookies "your_cookie_value_here" user
   kuake -cookies "your_cookie_value_here" upload "file.txt" "/folder/file.txt"
 
+Pipeline Mode:
+  Commands can be chained using Unix pipes. When stdin has data, commands automatically
+  switch to pipe mode and process input line by line.
+  
+  Examples:
+    # List files and delete them
+    kuake list "/photos" --stream | kuake delete
+    
+    # List files and get info for each
+    kuake list "/" --stream | kuake info
+    
+    # List files and get download URLs
+    kuake list "/documents" --stream | kuake download
+    
+    # List files, filter with jq, then delete
+    kuake list "/" --stream | jq -r 'select(.size > 1000000) | .path' | kuake delete
+
 Notes:
   - All path parameters must be quoted
   - Root directory is "/"
@@ -275,6 +310,8 @@ Notes:
   - Results output as JSON to stdout
   - Exit code: 0=success, 1=failure
   - When using -cookies, the config file is not read, improving efficiency and avoiding inconsistencies
+  - In pipe mode, each input line should be a JSON object with "path" or "fid" field
+  - Use --stream with list command to output one JSON per line for pipeline processing
 `)
 }
 
@@ -292,7 +329,154 @@ func outputJSON(result *CLIResult) {
 	if len(output) > 0 && output[len(output)-1] == '\n' {
 		output = output[:len(output)-1]
 	}
-	fmt.Println(output)
+	// 写入 stdout，捕获 broken pipe 错误
+	if _, err := fmt.Println(output); err != nil {
+		// 忽略 broken pipe 错误（管道接收端已关闭）
+		if strings.Contains(err.Error(), "broken pipe") {
+			// 静默退出，这是正常的管道行为
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "Failed to write output: %v\n", err)
+		os.Exit(ExitError)
+	}
+}
+
+// hasStdinData 检测 stdin 是否有数据可读
+func hasStdinData() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	// 检查是否是管道或重定向（不是终端）
+	return (stat.Mode() & os.ModeCharDevice) == 0
+}
+
+// extractPathFromJSON 从 JSON 中提取路径或 fid
+// 支持两种格式：
+// 1. 完整响应格式：{"success": true, "data": {"path": "...", "fid": "..."}} - 流式输出格式
+// 2. 简化格式：{"path": "...", "fid": "..."}
+func extractPathFromJSON(jsonStr string) (string, string, error) {
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+		return "", "", err
+	}
+
+	var path, fid string
+
+	// 检查是否是完整响应格式（流式输出格式）
+	if dataObj, ok := data["data"].(map[string]interface{}); ok {
+		// 直接提取 data 中的 path 和 fid
+		if p, ok := dataObj["path"].(string); ok {
+			path = p
+		}
+		if f, ok := dataObj["fid"].(string); ok {
+			fid = f
+		}
+	}
+
+	// 如果没有从 data 中提取到，尝试从根对象提取（简化格式）
+	if path == "" {
+		if p, ok := data["path"].(string); ok {
+			path = p
+		}
+	}
+	if fid == "" {
+		if f, ok := data["fid"].(string); ok {
+			fid = f
+		}
+	}
+
+	return path, fid, nil
+}
+
+// processStdinLines 从 stdin 逐行读取并处理
+// processor 函数接收 path 和 fid，返回处理结果
+func processStdinLines(processor func(path, fid string) *CLIResult) {
+	scanner := bufio.NewScanner(os.Stdin)
+	hasError := false
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		path, fid, err := extractPathFromJSON(line)
+		if err != nil {
+			// 如果解析失败，尝试将整行作为路径
+			path = line
+			fid = ""
+		}
+
+		if path == "" && fid == "" {
+			outputJSON(&CLIResult{
+				Success: false,
+				Code:    "INVALID_INPUT",
+				Message: fmt.Sprintf("cannot extract path or fid from input: %s", line),
+			})
+			hasError = true
+			continue
+		}
+
+		// 如果只有 fid，使用 fid；否则使用 path
+		var result *CLIResult
+		if path != "" {
+			result = processor(path, fid)
+		} else if fid != "" {
+			// 只有 fid 时，需要先获取文件信息
+			result = processor("", fid)
+		} else {
+			result = &CLIResult{
+				Success: false,
+				Code:    "INVALID_INPUT",
+				Message: "both path and fid are empty",
+			}
+		}
+
+		// 输出结果（流式输出，每行一个 JSON）
+		outputJSON(result)
+		if !result.Success {
+			hasError = true
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		// 忽略 broken pipe 错误（管道发送端已关闭）
+		if !strings.Contains(err.Error(), "broken pipe") {
+			outputJSON(&CLIResult{
+				Success: false,
+				Code:    "STDIN_READ_ERROR",
+				Message: fmt.Sprintf("failed to read from stdin: %v", err),
+			})
+			hasError = true
+		}
+	}
+
+	if hasError {
+		os.Exit(ExitError)
+	}
+}
+
+// outputStreamJSON 输出流式 JSON（每行一个 JSON 对象，不格式化）
+func outputStreamJSON(result *CLIResult) {
+	// 使用 Marshal 确保输出紧凑的单行 JSON（Marshal 默认就是紧凑格式，不格式化）
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to serialize result: %v\n", err)
+		return
+	}
+	// 直接写入 stdout
+	_, err = os.Stdout.Write(jsonBytes)
+	if err != nil {
+		// 忽略 broken pipe 错误（管道接收端已关闭）
+		if strings.Contains(err.Error(), "broken pipe") {
+			// 静默退出，这是正常的管道行为
+			os.Exit(0)
+		}
+		return
+	}
+	// 添加换行符
+	os.Stdout.WriteString("\n")
 }
 
 // handleUserInfo 处理获取用户信息命令
@@ -435,8 +619,18 @@ func handleUpload(client *sdk.QuarkClient, args []string) *CLIResult {
 // handleList 处理列出目录命令
 func handleList(client *sdk.QuarkClient, args []string) *CLIResult {
 	dirPath := "/"
-	if len(args) > 0 {
-		dirPath = args[0]
+	streamMode := false
+	
+	// 解析参数，支持 --stream 选项
+	var filteredArgs []string
+	for i, arg := range args {
+		if arg == "--stream" || arg == "-s" {
+			streamMode = true
+		} else if i == 0 {
+			dirPath = arg
+		} else {
+			filteredArgs = append(filteredArgs, arg)
+		}
 	}
 
 	response, err := client.List(dirPath)
@@ -455,6 +649,41 @@ func handleList(client *sdk.QuarkClient, args []string) *CLIResult {
 		}
 	}
 
+	// 流式模式：每行输出一个文件的 JSON
+	if streamMode {
+		// 从 response.Data 中提取 list 数组
+		// response.Data 的类型是 map[string]interface{}，但 list 字段的实际类型是 []sdk.QuarkFileInfo
+		if quarkFileInfos, ok := response.Data["list"].([]sdk.QuarkFileInfo); ok {
+			// 将 QuarkFileInfo 转换为 map[string]interface{} 并逐行输出
+			for _, qfi := range quarkFileInfos {
+				fileInfo := map[string]interface{}{
+					"fid":          qfi.Fid,
+					"file_name":    qfi.Name,
+					"path":         qfi.Path,
+					"size":         qfi.Size,
+					"ctime":        qfi.CreateTime,
+					"mtime":        qfi.ModifyTime,
+					"dir":          qfi.IsDirectory,
+					"download_url": qfi.DownloadURL,
+					"created_at":   qfi.CreatedAt,
+					"updated_at":   qfi.UpdatedAt,
+					"l_created_at": qfi.LCreatedAt,
+					"l_updated_at": qfi.LUpdatedAt,
+				}
+				fileResult := &CLIResult{
+					Success: true,
+					Code:    response.Code,
+					Message: "OK",
+					Data:    fileInfo,
+				}
+				outputStreamJSON(fileResult)
+			}
+			// 流式模式下不返回结果，已经逐行输出
+			return nil
+		}
+		// 如果无法提取 list，回退到普通模式
+	}
+
 	return &CLIResult{
 		Success: true,
 		Code:    response.Code,
@@ -465,11 +694,57 @@ func handleList(client *sdk.QuarkClient, args []string) *CLIResult {
 
 // handleInfo 处理获取文件信息命令
 func handleInfo(client *sdk.QuarkClient, args []string) *CLIResult {
+	// 检查是否有 stdin 输入（管道模式）
+	if hasStdinData() {
+		processStdinLines(func(path, fid string) *CLIResult {
+			// 优先使用 path，如果没有则使用 fid
+			targetPath := path
+			if targetPath == "" && fid != "" {
+				// 只有 fid 时，尝试直接使用（某些 API 可能支持）
+				targetPath = fid
+			}
+			
+			if targetPath == "" {
+				return &CLIResult{
+					Success: false,
+					Code:    "INVALID_INPUT",
+					Message: "cannot determine path or fid from input",
+				}
+			}
+
+			response, err := client.GetFileInfo(targetPath)
+			if err != nil {
+				return &CLIResult{
+					Success: false,
+					Message: err.Error(),
+				}
+			}
+
+			if !response.Success {
+				return &CLIResult{
+					Success: false,
+					Code:    response.Code,
+					Message: response.Message,
+				}
+			}
+
+			return &CLIResult{
+				Success: true,
+				Code:    response.Code,
+				Message: response.Message,
+				Data:    response.Data,
+			}
+		})
+		// processStdinLines 已经处理了所有输出，返回 nil 表示已完成
+		return nil
+	}
+
+	// 普通模式：从命令行参数读取
 	if len(args) < 1 {
 		return &CLIResult{
 			Success: false,
 			Code:    "INVALID_ARGS",
-			Message: `Usage: info <path> (path must be quoted, e.g., info 'file(1).txt')`,
+			Message: `Usage: info <path> (path must be quoted, e.g., info 'file(1).txt') or use pipe mode`,
 		}
 	}
 
@@ -684,11 +959,57 @@ func handleRename(client *sdk.QuarkClient, args []string) *CLIResult {
 
 // handleDelete 处理删除命令
 func handleDelete(client *sdk.QuarkClient, args []string) *CLIResult {
+	// 检查是否有 stdin 输入（管道模式）
+	if hasStdinData() {
+		processStdinLines(func(path, fid string) *CLIResult {
+			// 优先使用 path，如果没有则尝试使用 fid 作为路径
+			targetPath := path
+			if targetPath == "" && fid != "" {
+				// 尝试直接使用 fid 作为路径（某些情况下可能有效）
+				targetPath = fid
+			}
+			
+			if targetPath == "" {
+				return &CLIResult{
+					Success: false,
+					Code:    "INVALID_INPUT",
+					Message: "cannot determine path or fid from input",
+				}
+			}
+
+			response, err := client.Delete(targetPath)
+			if err != nil {
+				return &CLIResult{
+					Success: false,
+					Message: err.Error(),
+				}
+			}
+
+			if !response.Success {
+				return &CLIResult{
+					Success: false,
+					Code:    response.Code,
+					Message: response.Message,
+				}
+			}
+
+			return &CLIResult{
+				Success: true,
+				Code:    response.Code,
+				Message: response.Message,
+				Data:    response.Data,
+			}
+		})
+		// processStdinLines 已经处理了所有输出，返回 nil 表示已完成
+		return nil
+	}
+
+	// 普通模式：从命令行参数读取
 	if len(args) < 1 {
 		return &CLIResult{
 			Success: false,
 			Code:    "INVALID_ARGS",
-			Message: `Usage: delete <path> (path must be quoted, e.g., delete 'file(1).txt')`,
+			Message: `Usage: delete <path> (path must be quoted, e.g., delete 'file(1).txt') or use pipe mode`,
 		}
 	}
 
@@ -786,16 +1107,143 @@ func handleShareCreate(client *sdk.QuarkClient, args []string) *CLIResult {
 // handleDownload 处理下载命令：download <path> [dest]
 // 若提供 dest则下载到本地文件并输出进度；否则仅返回下载链接 JSON
 func handleDownload(client *sdk.QuarkClient, args []string) *CLIResult {
+	// 检查是否有 stdin 输入（管道模式）
+	destPath := ""
+	if len(args) >= 1 {
+		destPath = args[0] // 管道模式下，第一个参数可能是 dest
+	}
+
+	if hasStdinData() {
+		processStdinLines(func(path, fid string) *CLIResult {
+			// 优先使用 path，如果没有则使用 fid
+			targetPath := path
+			if targetPath == "" && fid != "" {
+				// 只有 fid 时，尝试直接使用
+				targetPath = fid
+			}
+			
+			if targetPath == "" {
+				return &CLIResult{
+					Success: false,
+					Code:    "INVALID_INPUT",
+					Message: "cannot determine path or fid from input",
+				}
+			}
+
+			fileInfo, err := client.GetFileInfo(targetPath)
+			if err != nil {
+				return &CLIResult{
+					Success: false,
+					Message: fmt.Sprintf("failed to get file info: %v", err),
+				}
+			}
+			if !fileInfo.Success {
+				return &CLIResult{
+					Success: false,
+					Code:    fileInfo.Code,
+					Message: fileInfo.Message,
+				}
+			}
+
+			fileFid, ok := fileInfo.Data["fid"].(string)
+			if !ok || fileFid == "" {
+				return &CLIResult{
+					Success: false,
+					Code:    "INVALID_FILE_INFO",
+					Message: "file info does not contain valid fid",
+				}
+			}
+
+			isDir, _ := fileInfo.Data["dir"].(bool)
+			if isDir {
+				return &CLIResult{
+					Success: false,
+					Code:    "INVALID_FILE_TYPE",
+					Message: "cannot download directory",
+				}
+			}
+
+			fileName, _ := fileInfo.Data["file_name"].(string)
+			if fileName == "" {
+				fileName = filepath.Base(targetPath)
+			}
+			if fileName == "" || fileName == "." {
+				fileName = "download"
+			}
+
+			// 如果提供了 dest，下载到本地
+			if destPath != "" {
+				var lastProgress *sdk.DownloadProgress
+				var lastPrint time.Time
+				err = client.DownloadFile(fileFid, destPath, fileName, func(p *sdk.DownloadProgress) {
+					lastProgress = p
+					now := time.Now()
+					if now.Sub(lastPrint) < 500*time.Millisecond && p.Total >= 0 && p.Downloaded < p.Total {
+						return
+					}
+					lastPrint = now
+					if p.Total > 0 {
+						pct := float64(p.Downloaded) / float64(p.Total) * 100
+						fmt.Fprintf(os.Stderr, "\rDownloaded %.2f MB / %.2f MB (%.1f%%)", float64(p.Downloaded)/(1024*1024), float64(p.Total)/(1024*1024), pct)
+					} else {
+						fmt.Fprintf(os.Stderr, "\rDownloaded %.2f MB", float64(p.Downloaded)/(1024*1024))
+					}
+				})
+				if err != nil {
+					return &CLIResult{
+						Success: false,
+						Message: fmt.Sprintf("download failed: %v", err),
+					}
+				}
+				if lastProgress != nil && lastProgress.Total > 0 {
+					fmt.Fprintf(os.Stderr, "\rDownloaded %.2f MB / %.2f MB (100.0%%)\n", float64(lastProgress.Downloaded)/(1024*1024), float64(lastProgress.Total)/(1024*1024))
+				} else {
+					fmt.Fprintf(os.Stderr, "\n")
+				}
+				localPath := destPath
+				if destPath == "" || destPath == "." || strings.HasSuffix(destPath, "/") || strings.HasSuffix(destPath, string(filepath.Separator)) {
+					localPath = filepath.Join(destPath, fileName)
+				} else if info, err := os.Stat(destPath); err == nil && info.IsDir() {
+					localPath = filepath.Join(destPath, fileName)
+				}
+				return &CLIResult{
+					Success: true,
+					Code:    "OK",
+					Message: "File downloaded successfully",
+					Data:    map[string]interface{}{"local_path": localPath, "path": targetPath},
+				}
+			}
+
+			// 未指定 dest：仅返回下载链接
+			downloadURL, err := client.GetDownloadURL(fileFid)
+			if err != nil {
+				return &CLIResult{
+					Success: false,
+					Message: fmt.Sprintf("failed to get download URL: %v", err),
+				}
+			}
+			return &CLIResult{
+				Success: true,
+				Code:    "OK",
+				Message: "Download URL retrieved successfully",
+				Data:    map[string]interface{}{"fid": fileFid, "path": targetPath, "download_url": downloadURL},
+			}
+		})
+		// processStdinLines 已经处理了所有输出，返回 nil 表示已完成
+		return nil
+	}
+
+	// 普通模式：从命令行参数读取
 	if len(args) < 1 {
 		return &CLIResult{
 			Success: false,
 			Code:    "INVALID_ARGS",
-			Message: `Usage: download <path> [dest] (path must be quoted, e.g., download "/file.txt" or download "/file.txt" ./local)`,
+			Message: `Usage: download <path> [dest] (path must be quoted, e.g., download "/file.txt" or download "/file.txt" ./local) or use pipe mode`,
 		}
 	}
 
 	path := args[0]
-	destPath := ""
+	destPath = ""
 	if len(args) >= 2 {
 		destPath = args[1]
 	}

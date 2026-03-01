@@ -1,0 +1,36 @@
+feat: OpenClaw 技能集成优化和认证方式增强 (v1.5.0)
+
+## 主要改动
+
+### 1. 认证方式增强
+- 添加环境变量 `KUAKE_COOKIE` 支持，符合 OpenClaw 标准配置方式
+- 认证优先级：`-cookies` 参数 > 环境变量 `KUAKE_COOKIE` > 配置文件
+- 自动处理 Cookie 格式（添加 `__pus=` 前缀和分号后缀）
+
+### 2. OpenClaw 技能集成优化
+- 移除 `bins` 要求，不再强制依赖 PATH 检测
+- 支持通过 `KUAKE_PATH` 环境变量指定完整路径
+- 添加 fallback 逻辑：KUAKE_PATH → PATH → 完整路径
+- 优化技能文档，添加详细的命令调用方式说明
+
+### 3. 文档更新
+- 简化 `DEPLOYMENT.md`，只保留必要的部署步骤
+- 更新 `SKILL.md`，添加 fallback 逻辑和多平台支持
+- 更新 `README.md` 变更日志和功能特性
+
+## 文件变更
+
+- `cmd/main.go`: 添加环境变量 `KUAKE_COOKIE` 支持
+- `openclaw/SKILL.md`: 优化技能文档，添加 fallback 逻辑
+- `openclaw/DEPLOYMENT.md`: 简化部署文档，添加 KUAKE_PATH 配置
+- `README.md`: 更新变更日志和功能特性
+
+## 版本升级
+
+v1.4.0 → v1.5.0
+
+## 影响范围
+
+- 向后兼容：不影响现有配置文件和命令行参数使用
+- 新增功能：支持 OpenClaw 标准配置方式，提升集成体验
+- 文档完善：简化部署流程，降低使用门槛
